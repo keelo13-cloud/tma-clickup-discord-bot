@@ -60,6 +60,7 @@ app.post('/interactions', verifyKeyMiddleware(DISCORD_PUBLIC_KEY), async (req, r
     if (customId.startsWith('approve_draft') || customId.startsWith('reject_draft')) {
       const N8N_APPROVAL_WEBHOOK = process.env.N8N_APPROVAL_WEBHOOK;
       const [action, tweetId, driveFileId] = customId.split('::');
+      const username = interaction.member?.user?.username || interaction.user?.username;
 
       // Acknowledge immediately
       res.json({ type: InteractionResponseType.DEFERRED_UPDATE_MESSAGE });
@@ -67,29 +68,39 @@ app.post('/interactions', verifyKeyMiddleware(DISCORD_PUBLIC_KEY), async (req, r
       if (action === 'approve_draft') {
         const draft = interaction.message.embeds?.[0]?.description?.split('---\n\n')[1] || '';
         console.log('[approve] Forwarding to n8n, draft length:', draft.length);
+
         if (N8N_APPROVAL_WEBHOOK) {
           await axios.post(N8N_APPROVAL_WEBHOOK, {
             action: 'approve',
             tweetId,
             driveFileId,
             draft,
-            approvedBy: interaction.member?.user?.username || interaction.user?.username,
+            approvedBy: username,
             timestamp: new Date().toISOString(),
           }).catch(err => console.error('Failed to forward approval:', err.message));
         } else {
           console.warn('[approve] N8N_APPROVAL_WEBHOOK not set');
         }
+
+        await editInteractionMessage(
+          token,
+          `✅ **Post queued in Hypefury!** It will go live on @MaddenAcademy_ according to the schedule.\n\n_Approved by ${username}_`,
+          [],
+          []
+        ).catch(err => console.error('Failed to update message after approve:', err.message));
+
       } else if (action === 'reject_draft') {
         const originalDraft = interaction.message.embeds?.[0]?.description || '';
         const originalFileName = interaction.message.embeds?.[0]?.description?.match(/`(.+?)`/)?.[1] || '';
         console.log('[reject] Forwarding to n8n');
+
         if (N8N_APPROVAL_WEBHOOK) {
           await axios.post(N8N_APPROVAL_WEBHOOK, {
             action: 'revise',
             driveFileId,
             originalDraft,
             originalFileName,
-            rejectedBy: interaction.member?.user?.username || interaction.user?.username,
+            rejectedBy: username,
             channelId: interaction.channel_id,
             messageId: interaction.message.id,
             timestamp: new Date().toISOString(),
@@ -97,6 +108,13 @@ app.post('/interactions', verifyKeyMiddleware(DISCORD_PUBLIC_KEY), async (req, r
         } else {
           console.warn('[reject] N8N_APPROVAL_WEBHOOK not set');
         }
+
+        await editInteractionMessage(
+          token,
+          `🔄 **Revision requested by ${username}.** Regenerating draft with feedback...`,
+          [],
+          []
+        ).catch(err => console.error('Failed to update message after reject:', err.message));
       }
 
       return;
