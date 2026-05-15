@@ -32,10 +32,10 @@ async function getClickUpTask(taskId) {
   return res.data;
 }
 
-async function editInteractionMessage(token, content) {
+async function editInteractionMessage(token, content, embeds = [], components = []) {
   await axios.patch(
     `https://discord.com/api/v10/webhooks/${DISCORD_APP_ID}/${token}/messages/@original`,
-    { content, components: [] },
+    { content, embeds, components },
     {
       headers: {
         Authorization: `Bot ${DISCORD_BOT_TOKEN}`,
