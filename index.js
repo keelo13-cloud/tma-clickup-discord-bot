@@ -54,7 +54,7 @@ app.post('/interactions', verifyKeyMiddleware(DISCORD_PUBLIC_KEY), async (req, r
   }
 
   // ── MODAL SUBMIT ──────────────────────────────────────────────────────────
-  if (interaction.type === InteractionType.APPLICATION_MODAL) {
+  if (interaction.type === 5) {
     const customId = interaction.data.custom_id;
 
     if (customId.startsWith('reject_feedback::')) {
@@ -167,7 +167,7 @@ app.post('/interactions', verifyKeyMiddleware(DISCORD_PUBLIC_KEY), async (req, r
                     custom_id: 'original_draft',
                     label: 'Original Draft (do not edit)',
                     style: 2, // Paragraph
-                    value: originalDraft.substring(0, 4000),
+                    value: originalDraft.substring(0, 3000),
                     required: false,
                   }
                 ]
