@@ -48,10 +48,54 @@ async function editInteractionMessage(token, content, embeds = [], components = 
 app.post('/interactions', verifyKeyMiddleware(DISCORD_PUBLIC_KEY), async (req, res) => {
   const interaction = req.body;
 
+  // ── PING ──────────────────────────────────────────────────────────────────
   if (interaction.type === InteractionType.PING) {
     return res.json({ type: InteractionResponseType.PONG });
   }
 
+  // ── MODAL SUBMIT ──────────────────────────────────────────────────────────
+  if (interaction.type === InteractionType.APPLICATION_MODAL) {
+    const customId = interaction.data.custom_id;
+
+    if (customId.startsWith('reject_feedback::')) {
+      const [, driveFileId, channelId, messageId] = customId.split('::');
+      const feedback = interaction.data.components[0].components[0].value;
+      const originalDraft = interaction.data.components[1]?.components[0]?.value || '';
+      const username = interaction.member?.user?.username || interaction.user?.username;
+      const token = interaction.token;
+
+      // Acknowledge modal submission
+      res.json({ type: InteractionResponseType.DEFERRED_UPDATE_MESSAGE });
+
+      const N8N_APPROVAL_WEBHOOK = process.env.N8N_APPROVAL_WEBHOOK;
+
+      // Update the original draft message to show regenerating state
+      await editInteractionMessage(
+        token,
+        `🔄 **Regenerating draft with feedback from ${username}...**\n\n> "${feedback}"`,
+        [],
+        []
+      ).catch(err => console.error('Failed to update message after modal submit:', err.message));
+
+      // Forward to n8n
+      if (N8N_APPROVAL_WEBHOOK) {
+        await axios.post(N8N_APPROVAL_WEBHOOK, {
+          action: 'revise',
+          driveFileId,
+          feedback,
+          originalDraft,
+          rejectedBy: username,
+          channelId,
+          messageId,
+          timestamp: new Date().toISOString(),
+        }).catch(err => console.error('Failed to forward revision to n8n:', err.message));
+      }
+
+      return;
+    }
+  }
+
+  // ── BUTTON / MESSAGE COMPONENT ────────────────────────────────────────────
   if (interaction.type === InteractionType.MESSAGE_COMPONENT) {
     const customId = interaction.data.custom_id;
     const token = interaction.token;
@@ -62,10 +106,10 @@ app.post('/interactions', verifyKeyMiddleware(DISCORD_PUBLIC_KEY), async (req, r
       const [action, tweetId, driveFileId] = customId.split('::');
       const username = interaction.member?.user?.username || interaction.user?.username;
 
-      // Acknowledge immediately
-      res.json({ type: InteractionResponseType.DEFERRED_UPDATE_MESSAGE });
-
       if (action === 'approve_draft') {
+        // Acknowledge immediately
+        res.json({ type: InteractionResponseType.DEFERRED_UPDATE_MESSAGE });
+
         const draft = interaction.message.embeds?.[0]?.description?.split('---\n\n')[1] || '';
         console.log('[approve] Forwarding to n8n, draft length:', draft.length);
 
@@ -90,31 +134,47 @@ app.post('/interactions', verifyKeyMiddleware(DISCORD_PUBLIC_KEY), async (req, r
         ).catch(err => console.error('Failed to update message after approve:', err.message));
 
       } else if (action === 'reject_draft') {
-        const originalDraft = interaction.message.embeds?.[0]?.description || '';
-        const originalFileName = interaction.message.embeds?.[0]?.description?.match(/`(.+?)`/)?.[1] || '';
-        console.log('[reject] Forwarding to n8n');
+        const originalDraft = interaction.message.embeds?.[0]?.description?.split('---\n\n')[1] || '';
+        const channelId = interaction.channel_id;
+        const messageId = interaction.message.id;
 
-        if (N8N_APPROVAL_WEBHOOK) {
-          await axios.post(N8N_APPROVAL_WEBHOOK, {
-            action: 'revise',
-            driveFileId,
-            originalDraft,
-            originalFileName,
-            rejectedBy: username,
-            channelId: interaction.channel_id,
-            messageId: interaction.message.id,
-            timestamp: new Date().toISOString(),
-          }).catch(err => console.error('Failed to forward rejection:', err.message));
-        } else {
-          console.warn('[reject] N8N_APPROVAL_WEBHOOK not set');
-        }
-
-        await editInteractionMessage(
-          token,
-          `🔄 **Revision requested by ${username}.** Regenerating draft with feedback...`,
-          [],
-          []
-        ).catch(err => console.error('Failed to update message after reject:', err.message));
+        // Show modal popup to collect feedback
+        return res.json({
+          type: 9, // MODAL response type
+          data: {
+            custom_id: `reject_feedback::${driveFileId}::${channelId}::${messageId}`,
+            title: 'Revise This Draft',
+            components: [
+              {
+                type: 1, // Action Row
+                components: [
+                  {
+                    type: 4, // Text Input
+                    custom_id: 'feedback',
+                    label: 'What needs to be added or revised?',
+                    style: 2, // Paragraph (multi-line)
+                    placeholder: 'e.g. "Add a title", "Revise section 3", "Make it shorter"',
+                    required: true,
+                    max_length: 1000,
+                  }
+                ]
+              },
+              {
+                type: 1, // Action Row
+                components: [
+                  {
+                    type: 4, // Text Input
+                    custom_id: 'original_draft',
+                    label: 'Original Draft (do not edit)',
+                    style: 2, // Paragraph
+                    value: originalDraft.substring(0, 4000),
+                    required: false,
+                  }
+                ]
+              }
+            ]
+          }
+        });
       }
 
       return;
