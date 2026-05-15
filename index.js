@@ -2,10 +2,8 @@ require('dotenv').config();
 const express = require('express');
 const { verifyKeyMiddleware, InteractionType, InteractionResponseType } = require('discord-interactions');
 const axios = require('axios');
-
 const app = express();
 const PORT = process.env.PORT || 3000;
-
 const DISCORD_BOT_TOKEN = process.env.DISCORD_BOT_TOKEN;
 const DISCORD_APP_ID = process.env.DISCORD_APP_ID;
 const DISCORD_PUBLIC_KEY = process.env.DISCORD_PUBLIC_KEY;
@@ -57,8 +55,55 @@ app.post('/interactions', verifyKeyMiddleware(DISCORD_PUBLIC_KEY), async (req, r
   if (interaction.type === InteractionType.MESSAGE_COMPONENT) {
     const customId = interaction.data.custom_id;
     const token = interaction.token;
-    const [action, taskId] = customId.split('_TASK_');
 
+    // ── Twitter draft approval buttons ──────────────────────────────────────
+    if (customId.startsWith('approve_draft') || customId.startsWith('reject_draft')) {
+      const N8N_APPROVAL_WEBHOOK = process.env.N8N_APPROVAL_WEBHOOK;
+      const [action, tweetId, driveFileId] = customId.split('::');
+
+      // Acknowledge immediately
+      res.json({ type: InteractionResponseType.DEFERRED_UPDATE_MESSAGE });
+
+      if (action === 'approve_draft') {
+        const draft = interaction.message.embeds?.[0]?.description?.split('---\n\n')[1] || '';
+        console.log('[approve] Forwarding to n8n, draft length:', draft.length);
+        if (N8N_APPROVAL_WEBHOOK) {
+          await axios.post(N8N_APPROVAL_WEBHOOK, {
+            action: 'approve',
+            tweetId,
+            driveFileId,
+            draft,
+            approvedBy: interaction.member?.user?.username || interaction.user?.username,
+            timestamp: new Date().toISOString(),
+          }).catch(err => console.error('Failed to forward approval:', err.message));
+        } else {
+          console.warn('[approve] N8N_APPROVAL_WEBHOOK not set');
+        }
+      } else if (action === 'reject_draft') {
+        const originalDraft = interaction.message.embeds?.[0]?.description || '';
+        const originalFileName = interaction.message.embeds?.[0]?.description?.match(/`(.+?)`/)?.[1] || '';
+        console.log('[reject] Forwarding to n8n');
+        if (N8N_APPROVAL_WEBHOOK) {
+          await axios.post(N8N_APPROVAL_WEBHOOK, {
+            action: 'revise',
+            driveFileId,
+            originalDraft,
+            originalFileName,
+            rejectedBy: interaction.member?.user?.username || interaction.user?.username,
+            channelId: interaction.channel_id,
+            messageId: interaction.message.id,
+            timestamp: new Date().toISOString(),
+          }).catch(err => console.error('Failed to forward rejection:', err.message));
+        } else {
+          console.warn('[reject] N8N_APPROVAL_WEBHOOK not set');
+        }
+      }
+
+      return;
+    }
+
+    // ── Existing ClickUp logic ───────────────────────────────────────────────
+    const [action, taskId] = customId.split('_TASK_');
     if (!taskId) {
       return res.json({
         type: InteractionResponseType.CHANNEL_MESSAGE_WITH_SOURCE,
@@ -67,11 +112,9 @@ app.post('/interactions', verifyKeyMiddleware(DISCORD_PUBLIC_KEY), async (req, r
     }
 
     res.json({ type: InteractionResponseType.DEFERRED_UPDATE_MESSAGE });
-
     try {
       const task = await getClickUpTask(taskId);
       const taskName = task.name;
-
       if (action === 'done') {
         await updateClickUpStatus(taskId, CLICKUP_DONE_STATUS);
         await editInteractionMessage(token, `✅ **Marked as Done:** ${taskName}\n_ClickUp has been updated._`);
@@ -83,7 +126,6 @@ app.post('/interactions', verifyKeyMiddleware(DISCORD_PUBLIC_KEY), async (req, r
       console.error('Error handling interaction:', err?.response?.data || err.message);
       await editInteractionMessage(token, `❌ Failed to update task. Please check ClickUp manually.`).catch(() => {});
     }
-
     return;
   }
 
@@ -91,5 +133,4 @@ app.post('/interactions', verifyKeyMiddleware(DISCORD_PUBLIC_KEY), async (req, r
 });
 
 app.get('/', (req, res) => res.send('TMA Discord Bot is running ✅'));
-
 app.listen(PORT, () => console.log(`Bot running on port ${PORT}`));
